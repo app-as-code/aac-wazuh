@@ -1,0 +1,24 @@
+# Rendered by aac-template-engine from service.yml (aac-wazuh).
+# Internal users of the wazuh-indexer security plugin. ONLY bcrypt hashes live
+# here (generate with scripts/gen-hash.sh); the matching plaintext passwords are
+# the *_PASSWORD secrets consumed by manager + dashboard. Upstream's demo users
+# (kibanaro, logstash, readall, snapshotrestore) are intentionally dropped.
+#
+# Applied on FIRST start only (allow_default_init_securityindex). To apply a
+# changed hash to a running indexer run securityadmin.sh (README).
+---
+_meta:
+  type: "internalusers"
+  config_version: 2
+
+admin:
+  hash: "{{ vars.INDEXER_ADMIN_HASH }}"
+  reserved: true
+  backend_roles:
+  - "admin"
+  description: "Wazuh indexer admin (dashboard login, manager filebeat, API clients)"
+
+kibanaserver:
+  hash: "{{ vars.DASHBOARD_SERVER_HASH }}"
+  reserved: true
+  description: "Internal user of the wazuh-dashboard backend"

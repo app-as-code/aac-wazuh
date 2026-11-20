@@ -1,0 +1,22 @@
+# Rendered by aac-template-engine from service.yml — input for wazuh-certs-tool
+# (run once by the aac-wazuh-certs-init sidecar). `name` becomes the file name
+# (<name>.pem / <name>-key.pem) and the certificate CN; `ip` becomes the SAN and
+# must equal the DNS name the peers dial on the stack-internal network
+# (= the compose service / container name). wazuh-certs-tool only accepts
+# names that look like an FQDN (label.tld), hence the dots.
+nodes:
+  # Wazuh indexer node(s)
+  indexer:
+    - name: aac-wazuh.indexer
+      ip: aac-wazuh.indexer
+
+  # Wazuh server (manager) node(s) — filebeat client cert
+  server:
+    - name: aac-wazuh.manager
+      ip: aac-wazuh.manager
+
+  # Wazuh dashboard node (unused while the dashboard serves plain HTTP behind
+  # Traefik, kept so the set is complete if server.ssl is ever enabled)
+  dashboard:
+    - name: {{ service.name }}.dashboard
+      ip: {{ service.name }}.dashboard

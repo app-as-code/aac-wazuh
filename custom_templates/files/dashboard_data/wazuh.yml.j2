@@ -1,0 +1,11 @@
+# Rendered by aac-template-engine from service.yml (aac-wazuh) — Wazuh app config.
+# The dashboard entrypoint appends a `hosts` block from env (WAZUH_API_URL,
+# API_USERNAME, API_PASSWORD) only when the id below is absent; keeping the block
+# here makes the SSoT authoritative and the file stable across recreates.
+hosts:
+  - 1513629884013:
+      url: "https://aac-wazuh.manager"
+      port: 55000
+      username: wazuh-wui
+      password: "{{ secrets.WAZUH_API_PASSWORD }}"
+      run_as: true

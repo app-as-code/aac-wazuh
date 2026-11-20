@@ -1,0 +1,50 @@
+# Rendered by aac-template-engine from service.yml (aac-wazuh) — wazuh-indexer
+# (OpenSearch) node config. Mounted over /usr/share/wazuh-indexer/config/opensearch.yml.
+network.host: "0.0.0.0"
+node.name: "aac-wazuh.indexer"
+cluster.name: "wazuh-cluster"
+path.data: /var/lib/wazuh-indexer
+path.logs: /var/log/wazuh-indexer
+discovery.type: single-node
+compatibility.override_main_response_version: true
+# mlockall is off: raising RLIMIT_MEMLOCK beyond the hard limit is not possible
+# inside an unprivileged LXC guest and OpenSearch refuses to start if the lock
+# is requested but fails. Swap on the host is negligible.
+bootstrap.memory_lock: false
+
+# --- TLS (certificate set from aac-wazuh-certs-init, directory mount) --------
+plugins.security.ssl.http.pemcert_filepath: /usr/share/wazuh-indexer/config/certs/aac-wazuh.indexer.pem
+plugins.security.ssl.http.pemkey_filepath: /usr/share/wazuh-indexer/config/certs/aac-wazuh.indexer-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: /usr/share/wazuh-indexer/config/certs/root-ca.pem
+plugins.security.ssl.transport.pemcert_filepath: /usr/share/wazuh-indexer/config/certs/aac-wazuh.indexer.pem
+plugins.security.ssl.transport.pemkey_filepath: /usr/share/wazuh-indexer/config/certs/aac-wazuh.indexer-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: /usr/share/wazuh-indexer/config/certs/root-ca.pem
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.transport.enforce_hostname_verification: false
+plugins.security.ssl.transport.resolve_hostname: false
+plugins.security.ssl.http.enabled_ciphers:
+  - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+  - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+  - "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+  - "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+plugins.security.ssl.http.enabled_protocols:
+  - "TLSv1.2"
+
+# --- security plugin -----------------------------------------------------------
+# DNs must match the certificates generated from certs.yml (same OU/O/L/C).
+plugins.security.authcz.admin_dn:
+- "CN=admin,OU={{ vars.CERT_OU }},O={{ vars.CERT_O }},L={{ vars.CERT_L }},C={{ vars.CERT_C }}"
+plugins.security.nodes_dn:
+- "CN=aac-wazuh.indexer,OU={{ vars.CERT_OU }},O={{ vars.CERT_O }},L={{ vars.CERT_L }},C={{ vars.CERT_C }}"
+plugins.security.check_snapshot_restore_write_privileges: true
+plugins.security.enable_snapshot_restore_privilege: true
+plugins.security.restapi.roles_enabled:
+- "all_access"
+- "security_rest_api_access"
+plugins.security.system_indices.enabled: true
+plugins.security.system_indices.indices: [".opendistro-alerting-config", ".opendistro-alerting-alert*", ".opendistro-anomaly-results*", ".opendistro-anomaly-detector*", ".opendistro-anomaly-checkpoints", ".opendistro-anomaly-detection-state", ".opendistro-reports-*", ".opendistro-notifications-*", ".opendistro-notebooks", ".opensearch-observability", ".opendistro-asynchronous-search-response*", ".replication-metadata-store"]
+# First start seeds the security index from opensearch-security/*.yml
+# (internal_users.yml is rendered from the SSoT). Later password changes need
+# securityadmin.sh — see README.
+plugins.security.allow_default_init_securityindex: true
+cluster.routing.allocation.disk.threshold_enabled: false

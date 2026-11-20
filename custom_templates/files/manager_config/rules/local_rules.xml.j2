@@ -1,0 +1,123 @@
+<!--
+  Rendered by aac-template-engine from service.yml (aac-wazuh) — local rules.
+  Mounted at /wazuh-config-mount/etc/rules/local_rules.xml (copied over
+  /var/ossec/etc/rules/local_rules.xml on every manager start = SSoT wins).
+
+  Noise dampening (2026-09-19 baseline, 7.8k alerts/6h analysed):
+    100010  SCA per-check "passed"/"not applicable" results  (2.9k of 7.8k)
+    100011  SCA per-check "failed" results (2.8k) — posture lives in the SCA view
+    100020  docker exec_start of container HEALTHCHECK probes (0.9k)
+    100021  docker container "die" with exit code 0 -> level 3 (finished jobs)
+    100030  rootcheck "file present on /dev" under /dev/.lxc  (0.5k, LXC artefact)
+    100040  sudo / PAM sessions of the ansible-agent automation user
+    100042  sudo session-closed events (no caller info in new pam_unix format)
+    100043/4 ansible-agent key logins from the platform networks
+    100050  Windows computer-account (NAME$) logon/logoff on the DCs
+  Level 0 = the event is still processed (SCA state, syscollector, FIM DB) but
+  never becomes an alert. Everything else stays untouched; local ids 100000+.
+-->
+<group name="local,aac,noise,">
+
+  <!-- SCA: only FAILED checks (19007) are worth an alert. The passed /
+       not-applicable siblings fire once per check on every agent's first
+       scan and on every result change. -->
+  <rule id="100010" level="0">
+    <if_sid>19008,19009</if_sid>
+    <field name="sca.check.result">^passed|^not applicable</field>
+    <options>no_full_log</options>
+    <description>SCA: passed / not-applicable check result (suppressed)</description>
+  </rule>
+
+  <!-- SCA failed checks: the per-check state lives in the agent's SCA view
+       (Security configuration assessment tab); as alerts they only duplicate
+       it, thousands at a time. Posture stays visible through the per-scan
+       summaries 19003/19004/19005 (score thresholds), which are untouched.
+       Bump to level 3 if drift (passed -> failed) should show up in alerts. -->
+  <rule id="100011" level="0">
+    <if_sid>19007</if_sid>
+    <field name="sca.check.result">^failed</field>
+    <options>no_full_log</options>
+    <description>SCA: failed check result — see the SCA view (suppressed)</description>
+  </rule>
+
+  <!-- docker-listener: every container HEALTHCHECK is an exec_start event.
+       Matches the probe idioms used across the fleet (wget/curl spiders,
+       "|| exit 1", pg_isready, mariadb/mysqladmin ping, redis-cli ping,
+       pdns_control ping, gitlab-healthcheck, nc -z). Real interactive execs
+       (bash, sh -c 'something else') keep alerting via 87907. -->
+  <rule id="100020" level="0">
+    <if_sid>87907</if_sid>
+    <field name="docker.Action" type="pcre2">^exec_start: (?:/bin/sh -c |/bin/bash -c |sh -c |bash -c )?(?:(?:/usr/(?:local/)?bin/)?(?:wget|curl) .*|.*\|\| exit 1|.*redis-cli .*ping.*|.*pg_isready.*|.*(?:mariadb-admin|mysqladmin) ping.*|.*pdns_control ping.*|.*healthcheck.*|.*nc -z .*|.* --version$|.*wazuh-control status.*|.*(?:test|\[) -[efdx] .*|.*ping -c ?\d+ .*|.*grep -q .*)$</field>
+    <options>no_full_log</options>
+    <description>Docker: container healthcheck probe in $(docker.Actor.Attributes.name) (suppressed)</description>
+  </rule>
+
+  <!-- docker-listener: a container that exits with code 0 is a finished job
+       (renovate, backup, one-shot inits), not an incident. Non-zero exits keep
+       the built-in level 7 of 87924. -->
+  <rule id="100021" level="3">
+    <if_sid>87924</if_sid>
+    <field name="docker.Actor.Attributes.exitCode">^0$</field>
+    <options>no_full_log</options>
+    <description>Docker: container $(docker.Actor.Attributes.name) finished normally (exit 0)</description>
+  </rule>
+
+  <!-- rootcheck on LXC guests: /dev/.lxc/proc/* is the container runtime's
+       device tree, not a hidden file. -->
+  <rule id="100030" level="0">
+    <if_sid>510</if_sid>
+    <match>/dev/.lxc/</match>
+    <description>rootcheck: LXC device tree entry under /dev/.lxc (suppressed)</description>
+  </rule>
+
+  <!-- ansible-agent = the platform's automation user (compliance runs,
+       rollouts). Its sudo and PAM session churn is expected; humans and every
+       other user keep the standard rules. -->
+  <rule id="100040" level="0">
+    <if_sid>5402</if_sid>
+    <match>ansible-agent : </match>
+    <description>sudo to root by the ansible-agent automation user (suppressed)</description>
+  </rule>
+
+  <rule id="100041" level="0">
+    <if_sid>5501,5502</if_sid>
+    <regex type="pcre2">for user ansible-agent\(|by ansible-agent\(uid=|by \(uid=1001\)</regex>
+    <description>PAM: session of the ansible-agent automation user (suppressed)</description>
+  </rule>
+
+  <!-- pam_unix on newer distros logs "session closed for user root" without
+       the caller, so the sudo close event carries no information the matching
+       5501 open event (still alerting for humans) does not already have. -->
+  <rule id="100042" level="0">
+    <if_sid>5502</if_sid>
+    <program_name>sudo</program_name>
+    <description>PAM: sudo session closed (suppressed, the open event is kept)</description>
+  </rule>
+
+  <!-- ansible-agent key logins from inside the platform networks are the
+       compliance runs / rollouts / orchestrator (onprem {{ vars.AUTOMATION_NET_ONPREM }}, hetzner
+       {{ vars.AUTOMATION_NET_HETZNER }}). A login of that user from anywhere else keeps 5715. -->
+  <rule id="100043" level="0">
+    <if_sid>5715</if_sid>
+    <user>ansible-agent</user>
+    <srcip>{{ vars.AUTOMATION_NET_ONPREM }}</srcip>
+    <description>sshd: ansible-agent automation login from the onprem network (suppressed)</description>
+  </rule>
+  <rule id="100044" level="0">
+    <if_sid>5715</if_sid>
+    <user>ansible-agent</user>
+    <srcip>{{ vars.AUTOMATION_NET_HETZNER }}</srcip>
+    <description>sshd: ansible-agent automation login from the hetzner network (suppressed)</description>
+  </rule>
+
+  <!-- Windows DCs: computer accounts (NAME$) log on/off over the network
+       every few seconds (replication, Kerberos, SMB). Human/service accounts
+       keep the standard 60106/60137 rules. -->
+  <rule id="100050" level="0">
+    <if_sid>60106,60137</if_sid>
+    <field name="win.eventdata.targetUserName" type="pcre2">\$$</field>
+    <options>no_full_log</options>
+    <description>Windows: computer-account logon/logoff $(win.eventdata.targetUserName) (suppressed)</description>
+  </rule>
+
+</group>

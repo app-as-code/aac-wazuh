@@ -1,0 +1,229 @@
+services:
+  # --- Main Application Service ---
+  aac-wazuh:
+    image: "wazuh/wazuh-dashboard:4.14.7"
+    container_name: "aac-wazuh"
+    hostname: "wazuh"
+    restart: "unless-stopped"
+
+
+    environment:
+      TZ: "Europe/Berlin"
+      INDEXER_USERNAME: "admin"
+      INDEXER_PASSWORD: "${INDEXER_PASSWORD:?set INDEXER_PASSWORD in .env (see .env.example)}"
+      DASHBOARD_USERNAME: "kibanaserver"
+      DASHBOARD_PASSWORD: "${DASHBOARD_PASSWORD:?set DASHBOARD_PASSWORD in .env (see .env.example)}"
+      WAZUH_API_URL: "https://aac-wazuh.manager"
+      API_USERNAME: "wazuh-wui"
+      API_PASSWORD: "${API_PASSWORD:?set API_PASSWORD in .env (see .env.example)}"
+    volumes:
+      - "/export/docker/aac-wazuh/dashboard_data:/usr/share/wazuh-dashboard/data/wazuh/config"
+      - "/export/docker/aac-wazuh/dashboard_custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom"
+      - "/export/docker/aac-wazuh/certs:/usr/share/wazuh-dashboard/certs:ro"
+      - "/export/docker/aac-wazuh/dashboard_config/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro"
+
+    networks:
+      - interconnect
+      - secured
+      - stack_internal
+
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.aac-wazuh.rule: "Host(`wazuh.example.com`)"
+      traefik.http.routers.aac-wazuh.entrypoints: "websecure"
+      traefik.http.routers.aac-wazuh.tls: "true"
+      traefik.http.routers.aac-wazuh.tls.certresolver: "ionos"
+      traefik.docker.network: "services-secured"
+      traefik.http.services.aac-wazuh.loadbalancer.server.port: "5601"
+      traefik.http.services.aac-wazuh.loadbalancer.server.scheme: "http"
+      auto-dns.createWildcard.aac-wazuh: "false"
+      auto-dns.customDNS.aac-wazuh: "true"
+      auto-dns.customDOMAIN.aac-wazuh: "example.com"
+      auto-dns.customHost.aac-wazuh: "wazuh"
+      homepage.group: "Sicherheit"
+      homepage.name: "Wazuh SIEM"
+      homepage.href: "https://wazuh.example.com"
+      homepage.icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/wazuh.png"
+      homepage.description: "Wazuh SIEM/XDR — Vulnerability Detection, FIM, SCA, Log-Analyse für die gesamte Flotte"
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c \u0027exec 3\u003c\u003e/dev/tcp/127.0.0.1/5601\u0027 \u0026\u0026 exit 0 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+    depends_on:
+      aac-wazuh-certs-init:
+        condition: service_completed_successfully
+      aac-wazuh.indexer:
+        condition: service_healthy
+      aac-wazuh.manager:
+        condition: service_healthy
+
+
+  # --- Service Dependencies (Sidecars) ---
+  aac-wazuh-certs-init:
+    image: "wazuh/wazuh-certs-generator:0.0.4"
+    container_name: "aac-wazuh-certs-init"
+    restart: "no"
+    
+
+
+    environment:
+      CERT_TOOL_VERSION: "4.14"
+
+
+    volumes:
+      - "/export/docker/aac-wazuh/certs:/certificates"
+      - "/export/docker/aac-wazuh/certs_ca:/ca-private"
+      - "/export/docker/aac-wazuh/certs_config:/config:ro"
+
+    networks:
+      - stack_internal
+
+
+
+    entrypoint:
+    - /bin/bash
+    - -c
+    - "set -e\nif [ -s /certificates/root-ca.pem ] && [ -s /certificates/aac-wazuh.indexer.pem\
+      \ ]; then\n  echo \"[certs-init] certificate set present \u2014 nothing to do\"\n\
+      else\n  echo \"[certs-init] generating certificate set from /config/certs.yml\"\n\
+      \  /entrypoint.sh\nfi\nchmod 755 /certificates\n# Park the CA private keys OUTSIDE\
+      \ the shared certs dir: the indexer's\n# bootstrap walks its whole config tree,\
+      \ so an unreadable subdir inside\n# certs/ would abort it (AccessDeniedException).\
+      \ /ca-private is a\n# separate mount only this sidecar sees.\nmkdir -p /ca-private\n\
+      for k in root-ca.key root-ca-manager.key; do\n  [ -f \"/certificates/$$k\" ] &&\
+      \ mv -f \"/certificates/$$k\" /ca-private/ || true\ndone\nif [ -d /certificates/ca-private\
+      \ ]; then\n  mv -f /certificates/ca-private/* /ca-private/ 2>/dev/null || true\n\
+      \  rmdir /certificates/ca-private\nfi\nchmod 700 /ca-private\nchmod 644 /certificates/root-ca.pem\
+      \ /certificates/root-ca-manager.pem\necho \"[certs-init] done\"; ls -l /certificates\n"
+
+
+  aac-wazuh.indexer:
+    image: "wazuh/wazuh-indexer:4.14.7"
+    container_name: "aac-wazuh.indexer"
+    restart: "unless-stopped"
+    
+
+
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms2g -Xmx2g"
+
+
+    volumes:
+      - "/export/docker/aac-wazuh/indexer_data:/var/lib/wazuh-indexer"
+      - "/export/docker/aac-wazuh/certs:/usr/share/wazuh-indexer/config/certs:ro"
+      - "/export/docker/aac-wazuh/indexer_config/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro"
+      - "/export/docker/aac-wazuh/indexer_config/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml:ro"
+
+    networks:
+      - stack_internal
+
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -o /dev/null -w \u0027%{http_code}\u0027 https://localhost:9200 | grep -qE \u0027^(200|401)$$\u0027"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    hostname: aac-wazuh.indexer
+
+
+  aac-wazuh.manager:
+    image: "wazuh/wazuh-manager:4.14.7"
+    container_name: "aac-wazuh.manager"
+    restart: "unless-stopped"
+    
+
+
+    environment:
+      TZ: "Europe/Berlin"
+      INDEXER_URL: "https://aac-wazuh.indexer:9200"
+      INDEXER_USERNAME: "admin"
+      INDEXER_PASSWORD: "${INDEXER_PASSWORD:?set INDEXER_PASSWORD in .env (see .env.example)}"
+      FILEBEAT_SSL_VERIFICATION_MODE: "full"
+      SSL_CERTIFICATE_AUTHORITIES: "/etc/ssl/wazuh/root-ca-manager.pem"
+      SSL_CERTIFICATE: "/etc/ssl/wazuh/aac-wazuh.manager.pem"
+      SSL_KEY: "/etc/ssl/wazuh/aac-wazuh.manager-key.pem"
+      API_USERNAME: "wazuh-wui"
+      API_PASSWORD: "${API_PASSWORD:?set API_PASSWORD in .env (see .env.example)}"
+    ports:
+      - "1514:1514/tcp"
+      - "1515:1515/tcp"
+      - "514:514/udp"
+      - "514:514/tcp"
+
+    volumes:
+      - "/export/docker/aac-wazuh/manager_api_configuration:/var/ossec/api/configuration"
+      - "/export/docker/aac-wazuh/manager_etc:/var/ossec/etc"
+      - "/export/docker/aac-wazuh/manager_logs:/var/ossec/logs"
+      - "/export/docker/aac-wazuh/manager_queue:/var/ossec/queue"
+      - "/export/docker/aac-wazuh/manager_multigroups:/var/ossec/var/multigroups"
+      - "/export/docker/aac-wazuh/manager_integrations:/var/ossec/integrations"
+      - "/export/docker/aac-wazuh/manager_active_response:/var/ossec/active-response/bin"
+      - "/export/docker/aac-wazuh/manager_agentless:/var/ossec/agentless"
+      - "/export/docker/aac-wazuh/manager_wodles:/var/ossec/wodles"
+      - "/export/docker/aac-wazuh/filebeat_etc:/etc/filebeat"
+      - "/export/docker/aac-wazuh/filebeat_var:/var/lib/filebeat"
+      - "/export/docker/aac-wazuh/certs:/etc/ssl/wazuh:ro"
+      - "/export/docker/aac-wazuh/manager_config/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro"
+      - "/export/docker/aac-wazuh/manager_config/authd.pass:/wazuh-config-mount/etc/authd.pass:ro"
+      - "/export/docker/aac-wazuh/manager_config/decoders/truenas.xml:/wazuh-config-mount/etc/decoders/truenas.xml:ro"
+      - "/export/docker/aac-wazuh/manager_config/rules/truenas.xml:/wazuh-config-mount/etc/rules/truenas.xml:ro"
+      - "/export/docker/aac-wazuh/manager_config/rules/local_rules.xml:/wazuh-config-mount/etc/rules/local_rules.xml:ro"
+
+    networks:
+      - secured
+      - stack_internal
+
+    labels:
+      traefik.enable: "True"
+      traefik.docker.network: "services-secured"
+      traefik.http.routers.aac-wazuh-api.rule: "Host(`wazuh-api.example.com`)"
+      traefik.http.routers.aac-wazuh-api.entrypoints: "websecure"
+      traefik.http.routers.aac-wazuh-api.tls: "True"
+      traefik.http.routers.aac-wazuh-api.tls.certresolver: "ionos"
+      traefik.http.routers.aac-wazuh-api.service: "aac-wazuh-api"
+      traefik.http.services.aac-wazuh-api.loadbalancer.server.port: "55000"
+      traefik.http.services.aac-wazuh-api.loadbalancer.server.scheme: "https"
+      traefik.http.services.aac-wazuh-api.loadbalancer.serverstransport: "my-insecure-transport@file"
+      auto-dns.customDNS.aac-wazuh-api: "True"
+      auto-dns.customDOMAIN.aac-wazuh-api: "example.com"
+      auto-dns.customHost.aac-wazuh-api: "wazuh-api"
+
+    healthcheck:
+      test: ["CMD-SHELL", "/var/ossec/bin/wazuh-control status | grep -q \u0027wazuh-remoted is running\u0027"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+    ulimits:
+      nofile:
+        soft: 655360
+        hard: 655360
+    hostname: aac-wazuh.manager
+
+
+
+networks:
+  secured:
+    name: "services-secured"
+    external: true
+  exposed:
+    name: "services-exposed"
+    external: true
+  interconnect:
+    name: "docker-default"
+    external: true
+  stack_internal:
+    name: "aac-wazuh_stack_internal"
+    driver: "bridge"
+

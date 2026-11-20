@@ -1,0 +1,315 @@
+service:
+  name: aac-wazuh
+  friendly_name: Wazuh SIEM
+  image_repo: wazuh/wazuh-dashboard
+  image_tag: 4.14.7
+  description: Wazuh SIEM/XDR — Vulnerability Detection, FIM, SCA, Log-Analyse für
+    die gesamte Flotte
+  icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/wazuh.png
+  category: Sicherheit
+  stage: prod
+  hostname: wazuh
+ports:
+- name: web
+  port: 5601
+  protocol: TCP
+config:
+  domain_name: example.com
+  generate_hostname: false
+  integrations:
+    traefik:
+      enabled: true
+      cert_resolver: ionos
+      entrypoint: websecure
+      service_port: 5601
+    homepage:
+      enabled: true
+    autodns:
+      enabled: true
+      create_wildcard: false
+  schema_version: 2
+stage_overrides:
+  prod:
+    service:
+      hostname: wazuh
+    config:
+      generate_hostname: false
+vars:
+  TZ: Europe/Berlin
+  INDEXER_JAVA_OPTS: -Xms2g -Xmx2g
+  CERT_TOOL_VERSION: '4.14'
+  CERT_OU: Wazuh
+  CERT_O: Wazuh
+  CERT_L: California
+  CERT_C: US
+  SYSLOG_ALLOWED_IPS: 192.0.2.0/24
+  AUTOMATION_NET_ONPREM: 192.0.2.0/24
+  AUTOMATION_NET_HETZNER: 198.51.100.0/24
+  AGENTS_DISCONNECTION_TIME: 10m
+  AGENTS_DISCONNECTION_ALERT_TIME: 1h
+  VD_FEED_UPDATE_INTERVAL: 60m
+  LOG_ALERT_LEVEL: '3'
+  TRUENAS_SYSLOG_HOSTNAME: TRUENAS
+  INDEXER_ADMIN_HASH: CHANGE_ME
+  DASHBOARD_SERVER_HASH: CHANGE_ME
+secrets:
+  INDEXER_ADMIN_PASSWORD: CHANGE_ME
+  DASHBOARD_SERVER_PASSWORD: CHANGE_ME
+  WAZUH_API_PASSWORD: CHANGE_ME
+  WAZUH_AUTHD_PASSWORD: CHANGE_ME
+deployments:
+  docker_compose:
+    restart_policy: unless-stopped
+    host_base_path: /export/docker
+    environment:
+      TZ: '{{ vars.TZ }}'
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: '{{ secrets.INDEXER_ADMIN_PASSWORD }}'
+      DASHBOARD_USERNAME: kibanaserver
+      DASHBOARD_PASSWORD: '{{ secrets.DASHBOARD_SERVER_PASSWORD }}'
+      WAZUH_API_URL: https://aac-wazuh.manager
+      API_USERNAME: wazuh-wui
+      API_PASSWORD: '{{ secrets.WAZUH_API_PASSWORD }}'
+    volumes:
+    - dashboard_data:/usr/share/wazuh-dashboard/data/wazuh/config
+    - dashboard_custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    - certs:/usr/share/wazuh-dashboard/certs:ro
+    - dashboard_osd_yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - bash -c 'exec 3<>/dev/tcp/127.0.0.1/5601' && exit 0 || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+volumes:
+  dashboard_data:
+    description: Dashboard app config (wazuh.yml rendered from custom_templates/files/dashboard_data
+      + UI state)
+  dashboard_custom:
+    description: Dashboard custom branding assets
+  certs:
+    description: TLS certificate set generated ONCE by aac-wazuh-certs-init (root-ca,
+      indexer, manager, dashboard, admin); mounted as a directory by every component
+  certs_ca:
+    description: CA private keys (root-ca.key), 0700 root — only the certs-init sidecar
+      mounts this
+  dashboard_osd_yml:
+    description: Rendered opensearch_dashboards.yml (HTTP server, mTLS to indexer)
+    file: dashboard_config/opensearch_dashboards.yml
+dependencies:
+  certs_init:
+    name: aac-wazuh-certs-init
+    image_repo: wazuh/wazuh-certs-generator
+    image_tag: 0.0.4
+    restart_policy: 'no'
+    inherit_global_env: false
+    environment:
+      CERT_TOOL_VERSION: '{{ vars.CERT_TOOL_VERSION }}'
+    entrypoint:
+    - /bin/bash
+    - -c
+    - "set -e\nif [ -s /certificates/root-ca.pem ] && [ -s /certificates/aac-wazuh.indexer.pem\
+      \ ]; then\n  echo \"[certs-init] certificate set present — nothing to do\"\n\
+      else\n  echo \"[certs-init] generating certificate set from /config/certs.yml\"\
+      \n  /entrypoint.sh\nfi\nchmod 755 /certificates\n# Park the CA private keys\
+      \ OUTSIDE the shared certs dir: the indexer's\n# bootstrap walks its whole config\
+      \ tree, so an unreadable subdir inside\n# certs/ would abort it (AccessDeniedException).\
+      \ /ca-private is a\n# separate mount only this sidecar sees.\nmkdir -p /ca-private\n\
+      for k in root-ca.key root-ca-manager.key; do\n  [ -f \"/certificates/$$k\" ]\
+      \ && mv -f \"/certificates/$$k\" /ca-private/ || true\ndone\nif [ -d /certificates/ca-private\
+      \ ]; then\n  mv -f /certificates/ca-private/* /ca-private/ 2>/dev/null || true\n\
+      \  rmdir /certificates/ca-private\nfi\nchmod 700 /ca-private\nchmod 644 /certificates/root-ca.pem\
+      \ /certificates/root-ca-manager.pem\necho \"[certs-init] done\"; ls -l /certificates\n"
+    volumes:
+      certs:
+        target: /certificates
+      certs_ca:
+        target: /ca-private
+      certs_config:
+        target: /config
+        flags: ro
+  indexer:
+    name: aac-wazuh.indexer
+    hostname: aac-wazuh.indexer
+    image_repo: wazuh/wazuh-indexer
+    image_tag: 4.14.7
+    restart_policy: unless-stopped
+    inherit_global_env: false
+    environment:
+      OPENSEARCH_JAVA_OPTS: '{{ vars.INDEXER_JAVA_OPTS }}'
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -sk -o /dev/null -w '%{http_code}' https://localhost:9200 | grep -qE
+        '^(200|401)$$'
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    volumes:
+      indexer_data:
+        target: /var/lib/wazuh-indexer
+      certs:
+        target: /usr/share/wazuh-indexer/config/certs
+        flags: ro
+      indexer_opensearch_yml:
+        file: indexer_config/opensearch.yml
+        target: /usr/share/wazuh-indexer/config/opensearch.yml
+        flags: ro
+      indexer_internal_users_yml:
+        file: indexer_config/internal_users.yml
+        target: /usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
+        flags: ro
+  manager:
+    name: aac-wazuh.manager
+    hostname: aac-wazuh.manager
+    image_repo: wazuh/wazuh-manager
+    image_tag: 4.14.7
+    restart_policy: unless-stopped
+    inherit_global_env: false
+    ports:
+    - name: agents
+      port: 1514
+      external_port: 1514
+      protocol: TCP
+    - name: enrollment
+      port: 1515
+      external_port: 1515
+      protocol: TCP
+    - name: syslog-udp
+      port: 514
+      external_port: 514
+      protocol: UDP
+    - name: syslog-tcp
+      port: 514
+      external_port: 514
+      protocol: TCP
+    networks_to_join:
+    - secured
+    labels:
+      traefik.enable: true
+      traefik.docker.network: services-secured
+      traefik.http.routers.aac-wazuh-api.rule: Host(`wazuh-api.{{ config.domain_name
+        }}`)
+      traefik.http.routers.aac-wazuh-api.entrypoints: websecure
+      traefik.http.routers.aac-wazuh-api.tls: true
+      traefik.http.routers.aac-wazuh-api.tls.certresolver: ionos
+      traefik.http.routers.aac-wazuh-api.service: aac-wazuh-api
+      traefik.http.services.aac-wazuh-api.loadbalancer.server.port: 55000
+      traefik.http.services.aac-wazuh-api.loadbalancer.server.scheme: https
+      traefik.http.services.aac-wazuh-api.loadbalancer.serverstransport: my-insecure-transport@file
+      auto-dns.customDNS.aac-wazuh-api: true
+      auto-dns.customDOMAIN.aac-wazuh-api: '{{ config.domain_name }}'
+      auto-dns.customHost.aac-wazuh-api: wazuh-api
+    environment:
+      TZ: '{{ vars.TZ }}'
+      INDEXER_URL: https://aac-wazuh.indexer:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: '{{ secrets.INDEXER_ADMIN_PASSWORD }}'
+      FILEBEAT_SSL_VERIFICATION_MODE: full
+      SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/wazuh/root-ca-manager.pem
+      SSL_CERTIFICATE: /etc/ssl/wazuh/aac-wazuh.manager.pem
+      SSL_KEY: /etc/ssl/wazuh/aac-wazuh.manager-key.pem
+      API_USERNAME: wazuh-wui
+      API_PASSWORD: '{{ secrets.WAZUH_API_PASSWORD }}'
+    ulimits:
+      nofile:
+        soft: 655360
+        hard: 655360
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - /var/ossec/bin/wazuh-control status | grep -q 'wazuh-remoted is running'
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    volumes:
+      manager_api_configuration:
+        target: /var/ossec/api/configuration
+        uid: 999
+        gid: 999
+      manager_etc:
+        target: /var/ossec/etc
+        uid: 999
+        gid: 999
+      manager_logs:
+        target: /var/ossec/logs
+        uid: 999
+        gid: 999
+      manager_queue:
+        target: /var/ossec/queue
+        uid: 999
+        gid: 999
+      manager_multigroups:
+        target: /var/ossec/var/multigroups
+        uid: 999
+        gid: 999
+      manager_integrations:
+        target: /var/ossec/integrations
+        uid: 999
+        gid: 999
+      manager_active_response:
+        target: /var/ossec/active-response/bin
+        uid: 999
+        gid: 999
+      manager_agentless:
+        target: /var/ossec/agentless
+        uid: 999
+        gid: 999
+      manager_wodles:
+        target: /var/ossec/wodles
+        uid: 999
+        gid: 999
+      filebeat_etc:
+        target: /etc/filebeat
+      filebeat_var:
+        target: /var/lib/filebeat
+      certs:
+        target: /etc/ssl/wazuh
+        flags: ro
+      manager_ossec_conf:
+        file: manager_config/ossec.conf
+        target: /wazuh-config-mount/etc/ossec.conf
+        flags: ro
+      manager_authd_pass:
+        file: manager_config/authd.pass
+        target: /wazuh-config-mount/etc/authd.pass
+        flags: ro
+      manager_truenas_decoders:
+        file: manager_config/decoders/truenas.xml
+        target: /wazuh-config-mount/etc/decoders/truenas.xml
+        flags: ro
+      manager_truenas_rules:
+        file: manager_config/rules/truenas.xml
+        target: /wazuh-config-mount/etc/rules/truenas.xml
+        flags: ro
+      manager_local_rules:
+        file: manager_config/rules/local_rules.xml
+        target: /wazuh-config-mount/etc/rules/local_rules.xml
+        flags: ro
+deployment_strategy:
+  main:
+    enabled: true
+    target_stage: prod
+  dev:
+    enabled: true
+    target_stage: dev
+  test:
+    enabled: false
+    target_stage: test
+  ansible-dev:
+    enabled: true
+    target_stage: dev
+  iac-dev:
+    enabled: true
+    target_stage: dev
+  template-dev:
+    enabled: true
+    target_stage: dev
